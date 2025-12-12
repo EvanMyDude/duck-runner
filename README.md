@@ -16,7 +16,7 @@ A fast-paced 3D endless runner game built with Three.js. Jump over blocks and du
 
 ## Play the Game
 
-[Play Duck Runner Now](https://evanelectro.github.io/duck-runner/)
+[Play Duck Runner Now](https://evanmydude.github.io/duck-runner/)
 
 ## Development
 
