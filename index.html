@@ -240,7 +240,7 @@
         <button id="mute-button" aria-label="Toggle sound">🔊</button>
         <div id="hud">
             <div id="score-display">0</div>
-            <div id="level-display">SPEED 1</div>
+            <div id="level-display">SPEED 1.0×</div>
             <div id="best-display">BEST 0</div>
         </div>
         <div id="instructions">Jump: SPACE / ↑ &nbsp;·&nbsp; Duck (hold): ↓ / S &nbsp;·&nbsp; Pause: P</div>
@@ -314,12 +314,26 @@
             const DESPAWN_BEHIND = 2.2;
 
             // ---- Difficulty ----
+            // Both curves are driven by n, the number of obstacles the player has reached.
+            // Speed rises continuously toward OMEGA_MAX; the gap between obstacles shrinks toward GAP_END.
             const OMEGA_START = 0.55;        // rad/s the ramp turns at the start
-            const OMEGA_STEP = 0.12;         // fractional speed added per level
-            const CLEARED_PER_LEVEL = 10;
-            const GAP_START = 1.7, GAP_STEP = 0.08, GAP_MIN = 0.75; // seconds between obstacles
+            const OMEGA_MAX = 4.4;           // asymptote: speed keeps rising but never passes this
+            const OMEGA_SCALE = 127;         // obstacles per e-fold of the remaining speed-up
+            const GAP_START = 1.7, GAP_END = 0.26, GAP_SCALE = 45; // seconds between obstacles
+            const GAP_JITTER = 0.45;         // gaps are stretched by up to 45%, never shortened
+            // Feasibility floor: consecutive obstacles are never closer in time than
+            // overlap time + GAP_FLOOR_SLACK. The worst pair (LOW then LOW, with a fast-fall in
+            // between and inputs only every 1/30 s) needs 0.193 s after the overlap; 0.2267 s keeps margin.
+            // Do not tune this by bisection: LOW-LOW feasibility is not monotonic in the gap at low speed.
+            const GAP_FLOOR_SLACK = 0.160 + 2 / 30;
             const MAX_SAME_TYPE = 3;
             const IDLE_OMEGA = 0.25;
+
+            // ---- Simulation ----
+            // Fixed step so jump physics, and therefore what is clearable, never depends on frame rate.
+            const SIM_STEP = 1 / 120;
+            const MAX_FRAME_DT = 1 / 30;
+            const MAX_STEPS_PER_FRAME = 4;
 
             // ---- Camera ----
             const CAM_BACK = 0.9, CAM_RADIUS = 13.5, CAM_HEIGHT = 6.5, CAM_LOOK_AHEAD = 0.7;
@@ -332,17 +346,21 @@
             let obstacles = [];
             let state = 'menu', pausedFrom = null;
             let spin = 0, omega = IDLE_OMEGA;
-            let score = 0, level = 0, hits = 0, best = loadBest();
+            let score = 0, hits = 0, skipped = 0, best = loadBest();
+            let baseN = 0;                 // starting difficulty (non-zero only via the debug hook)
+            let spawnIndex = 0;            // obstacles created this run, offset by baseN
             let sameTypeRun = 0, lastType = -1;
-            let pendingGap = null; // seconds until the next spawn, rolled once per spawn
+            let pendingSpacing = null;     // angle to the next spawn, rolled once per spawn
+            let simAccumulator = 0;
             const player = {
-                y: 0, vy: 0, grounded: true, crouch: 1, slip: 0,
+                y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0,
                 jumpBuffer: 0, invincible: 0, walk: 0, tumble: 0,
                 fall: null
             };
-            const input = { duckHeld: false, jumpQueued: false };
+            const input = { duckHeld: false, duckPressed: false, jumpQueued: false };
             let countdownTimers = [];
             let timeScale = 1;
+            const debugOverrides = { startN: 0, omega: null, exactFloor: false, pattern: null };
             let backgroundMusic, isMuted = false;
             let jumpSound, duckSound, collisionSound;
 
@@ -623,7 +641,8 @@
                         });
                     }
                 }
-                group.userData = { type, phi, hit: false, passed: false, materials };
+                group.userData = { id: spawnIndex, type, phi, hit: false, passed: false, skipped: false, materials };
+                spawnIndex++;
                 scene.add(group);
                 obstacles.push(group);
                 positionObstacle(group);
@@ -680,7 +699,10 @@
             }
 
             function setDuck(held) {
-                if (held && !input.duckHeld && state === 'playing') soundManager.playDuck();
+                if (held && !input.duckHeld) {
+                    input.duckPressed = true; // a press in mid-air triggers a fast-fall
+                    if (state === 'playing') soundManager.playDuck();
+                }
                 input.duckHeld = held;
             }
 
@@ -752,26 +774,28 @@
                 countdownTimers = [];
                 clearObstacles();
                 score = 0;
-                level = 0;
                 hits = 0;
+                skipped = 0;
+                baseN = debugOverrides.startN;
+                spawnIndex = baseN;
                 omega = 0;
+                simAccumulator = 0;
                 Object.assign(player, {
-                    y: 0, vy: 0, grounded: true, crouch: 1, slip: 0,
+                    y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0,
                     jumpBuffer: 0, invincible: 0, walk: 0, tumble: 0, fall: null
                 });
                 input.jumpQueued = false;
+                input.duckPressed = false;
                 playerGroup.visible = true;
                 playerBody.rotation.set(0, 0, 0);
                 playerBody.scale.set(1, 1, 1);
                 sameTypeRun = 0;
                 lastType = -1;
-                pendingGap = null;
+                pendingSpacing = null;
                 // Pre-fill the incoming stretch of ramp so the first obstacle arrives in a few seconds.
-                let phi = FIRST_OBSTACLE_PHI;
-                while (phi < SPAWN_PHI) {
-                    createObstacle(nextObstacleType(), phi);
-                    phi += currentOmegaTarget() * nextGapTime();
-                }
+                // Uses the same spacing rule as live spawning, so the feasibility floor covers it too.
+                createObstacle(nextObstacleType(), FIRST_OBSTACLE_PHI);
+                while (spawnObstacles()) { /* keep filling until the next slot is past SPAWN_PHI */ }
                 updateHud();
                 updateFootingPips();
             }
@@ -841,16 +865,40 @@
             }
 
             // ---------- Difficulty ----------
-            function currentOmegaTarget() {
-                return OMEGA_START * (1 + OMEGA_STEP * level);
+            // Obstacles the player has reached: cleared, hit, or passed while invincible.
+            function reachedCount() {
+                return baseN + score + hits + skipped;
             }
 
-            function nextGapTime() {
-                const base = Math.max(GAP_MIN, GAP_START - GAP_STEP * level);
-                return base * (1 + Math.random() * 0.45);
+            function omegaTarget(n) {
+                if (debugOverrides.omega !== null) return debugOverrides.omega;
+                return OMEGA_MAX - (OMEGA_MAX - OMEGA_START) * Math.exp(-n / OMEGA_SCALE);
+            }
+
+            function designGap(n) {
+                return GAP_END + (GAP_START - GAP_END) * Math.exp(-n / GAP_SCALE);
+            }
+
+            // Shortest time allowed between two obstacles at speed w: the overlap time plus slack.
+            function gapFloor(w) {
+                return 2 * OVERLAP_ANGLE / w + GAP_FLOOR_SLACK;
+            }
+
+            // Angle between obstacle i and the one before it. Obstacle i reaches the player while
+            // n <= i, and omega only rises toward omegaTarget(n) from below, so the ramp never turns
+            // faster than omegaTarget(i) during its approach: the real time gap is at least `gap`.
+            function nextSpacing(i) {
+                const w = omegaTarget(i);
+                const designed = debugOverrides.exactFloor ? 0 : designGap(i) * (1 + Math.random() * GAP_JITTER);
+                const gap = Math.max(designed, gapFloor(w));
+                return w * gap;
             }
 
             function nextObstacleType() {
+                if (debugOverrides.pattern) {
+                    const p = debugOverrides.pattern;
+                    return p[(spawnIndex - baseN) % p.length];
+                }
                 let type = Math.random() < 0.5 ? LOW : HIGH;
                 if (type === lastType && sameTypeRun >= MAX_SAME_TYPE) type = 1 - type;
                 sameTypeRun = type === lastType ? sameTypeRun + 1 : 1;
@@ -863,25 +911,30 @@
                 return PHI_HOME - player.slip * KNOCK_ANGLE;
             }
 
-            function step(dt) {
+            // Runs whole fixed steps for one rendered frame; input changes land between frames.
+            function advance(frameDt) {
                 if (state === 'paused') return;
-                const active = state === 'playing' || state === 'falling';
-                const targetOmega = active ? currentOmegaTarget() : (state === 'countdown' ? 0 : IDLE_OMEGA);
-                omega += (targetOmega - omega) * Math.min(1, dt * 3);
+                simAccumulator += frameDt;
+                const steps = Math.min(MAX_STEPS_PER_FRAME, Math.floor(simAccumulator / SIM_STEP + 1e-9));
+                simAccumulator -= steps * SIM_STEP;
+                if (steps === MAX_STEPS_PER_FRAME) simAccumulator = Math.min(simAccumulator, SIM_STEP - 1e-9);
+                for (let i = 0; i < steps; i++) step(SIM_STEP);
+            }
 
-                // Sub-step so fast spins can't tunnel through the collision window.
-                const subSteps = Math.max(1, Math.ceil(omega * dt / 0.04));
-                const h = dt / subSteps;
-                for (let i = 0; i < subSteps; i++) {
-                    const travel = omega * h;
-                    spin += travel;
-                    for (const o of obstacles) o.userData.phi -= travel;
-                    if (state === 'playing') {
-                        updatePlayer(h);
-                        checkCollisions();
-                    } else if (state === 'falling') {
-                        updateFall(h);
-                    }
+            function step(h) {
+                const active = state === 'playing' || state === 'falling';
+                const targetOmega = active ? omegaTarget(reachedCount()) : (state === 'countdown' ? 0 : IDLE_OMEGA);
+                omega += (targetOmega - omega) * Math.min(1, h * 3);
+
+                // At OMEGA_MAX one step moves 0.037 rad, well inside the 0.144 rad collision window.
+                const travel = omega * h;
+                spin += travel;
+                for (const o of obstacles) o.userData.phi -= travel;
+                if (state === 'playing') {
+                    updatePlayer(h);
+                    checkCollisions();
+                } else if (state === 'falling') {
+                    updateFall(h);
                 }
                 if (active) spawnObstacles();
                 for (let i = obstacles.length - 1; i >= 0; i--) {
@@ -890,19 +943,27 @@
                         obstacles.splice(i, 1);
                     }
                 }
-                abyss.rotation.z += dt * 0.15;
+                abyss.rotation.z += h * 0.15;
             }
 
+            // Places the next obstacle exactly one spacing behind the newest once that slot has
+            // rotated into view of SPAWN_PHI. Returns true if it spawned one.
             function spawnObstacles() {
-                if (pendingGap === null) pendingGap = nextGapTime();
+                if (pendingSpacing === null) pendingSpacing = nextSpacing(spawnIndex);
                 const newest = obstacles[obstacles.length - 1];
-                if (!newest || SPAWN_PHI - newest.userData.phi >= omega * pendingGap) {
-                    createObstacle(nextObstacleType(), SPAWN_PHI);
-                    pendingGap = null;
-                }
+                const phi = newest ? newest.userData.phi + pendingSpacing : SPAWN_PHI;
+                if (phi > SPAWN_PHI) return false;
+                createObstacle(nextObstacleType(), phi);
+                pendingSpacing = null;
+                return true;
             }
 
             function updatePlayer(dt) {
+                if (input.duckPressed) {
+                    // Fast-fall only on a fresh duck press in mid-air, so a held duck never eats a jump.
+                    if (!player.grounded) player.fastFall = true;
+                    input.duckPressed = false;
+                }
                 if (input.jumpQueued) {
                     player.jumpBuffer = JUMP_BUFFER;
                     input.jumpQueued = false;
@@ -910,19 +971,22 @@
                 if (player.grounded && player.jumpBuffer > 0) {
                     player.vy = JUMP_VELOCITY;
                     player.grounded = false;
+                    player.fastFall = false;
                     player.jumpBuffer = 0;
                     soundManager.playJump();
                 }
                 player.jumpBuffer = Math.max(0, player.jumpBuffer - dt);
 
                 if (!player.grounded) {
+                    // Exact constant-gravity integration, so the arc is the same at any step size.
+                    if (player.fastFall) player.vy = Math.min(player.vy, -FAST_FALL_VELOCITY);
+                    player.y += player.vy * dt - GRAVITY * dt * dt / 2;
                     player.vy -= GRAVITY * dt;
-                    if (input.duckHeld) player.vy = Math.min(player.vy, -FAST_FALL_VELOCITY);
-                    player.y += player.vy * dt;
                     if (player.y <= 0) {
                         player.y = 0;
                         player.vy = 0;
                         player.grounded = true;
+                        player.fastFall = false;
                     }
                 }
                 const crouchTarget = player.grounded && input.duckHeld ? CROUCH_SCALE : 1;
@@ -943,16 +1007,20 @@
                     if (d.hit || d.passed) continue;
                     if (d.phi < phiP - OVERLAP_ANGLE) {
                         d.passed = true;
-                        score++;
-                        level = Math.floor(score / CLEARED_PER_LEVEL);
+                        if (d.skipped) skipped++;
+                        else score++;
                         updateHud();
                         continue;
                     }
-                    if (Math.abs(d.phi - phiP) > OVERLAP_ANGLE || player.invincible > 0) continue;
+                    if (Math.abs(d.phi - phiP) > OVERLAP_ANGLE) continue;
                     const surfaceO = surfaceY(d.phi);
                     const blocked = d.type === LOW
                         ? feet < surfaceO + LOW_TOP - HIT_FORGIVENESS
                         : head > surfaceO + HIGH_BOTTOM + HIT_FORGIVENESS;
+                    if (blocked && player.invincible > 0) {
+                        d.skipped = true; // would have hit; invincibility lets it through without points
+                        continue;
+                    }
                     if (blocked) {
                         d.hit = true;
                         ghostObstacle(o);
@@ -966,6 +1034,7 @@
                 hits++;
                 soundManager.playCollision();
                 updateFootingPips();
+                updateHud();
                 if (hits >= MAX_HITS) {
                     startFall();
                     return;
@@ -1038,8 +1107,7 @@
 
             function animate() {
                 requestAnimationFrame(animate);
-                const dt = Math.min(clock.getDelta(), 1 / 30) * timeScale;
-                step(dt);
+                advance(Math.min(clock.getDelta() * timeScale, MAX_FRAME_DT));
                 render();
             }
 
@@ -1063,24 +1131,51 @@
 
             function updateHud() {
                 document.getElementById('score-display').textContent = score;
-                document.getElementById('level-display').textContent = `SPEED ${level + 1}`;
+                const speed = omegaTarget(reachedCount()) / OMEGA_START;
+                document.getElementById('level-display').textContent = `SPEED ${speed.toFixed(1)}×`;
                 document.getElementById('best-display').textContent = `BEST ${Math.max(best, score)}`;
             }
 
             // ---------- Debug hook (?debug) for automated testing ----------
             function exposeDebug() {
+                const snapshot = () => ({
+                    state, score, hits, skipped, n: reachedCount(), spawnIndex, omega,
+                    omegaTarget: omegaTarget(reachedCount()),
+                    phiP: playerPhi(), y: player.y, vy: player.vy, grounded: player.grounded,
+                    fastFall: player.fastFall, crouch: player.crouch, invincible: player.invincible,
+                    jumpBuffer: player.jumpBuffer, duckHeld: input.duckHeld,
+                    obstacles: obstacles.map(o => ({ id: o.userData.id, type: o.userData.type, phi: o.userData.phi, hit: o.userData.hit, passed: o.userData.passed, skipped: o.userData.skipped }))
+                });
                 window.__game = {
-                    snapshot: () => ({
-                        state, score, level, hits, omega,
-                        phiP: playerPhi(), y: player.y, grounded: player.grounded, crouch: player.crouch,
-                        invincible: player.invincible,
-                        obstacles: obstacles.map(o => ({ type: o.userData.type, phi: o.userData.phi, hit: o.userData.hit, passed: o.userData.passed }))
-                    }),
+                    snapshot,
                     jump: pressJump,
                     duck: setDuck,
-                    setScore: (n) => { score = n; level = Math.floor(score / CLEARED_PER_LEVEL); updateHud(); },
+                    // Difficulty to start the next run at, e.g. startAt(150) then press Start.
+                    startAt: (n) => { debugOverrides.startN = Math.max(0, Math.floor(n)); },
                     setTimeScale: (t) => { timeScale = t; },
-                    constants: { OVERLAP_ANGLE, LOW, HIGH, JUMP_VELOCITY, GRAVITY, R_PLAYER, MAX_HITS }
+                    // Test-only: fixed speed, every gap exactly at the floor, and/or a repeating type pattern.
+                    override: (o) => { Object.assign(debugOverrides, o); },
+                    // Starts a run with no countdown, for synchronous simulation.
+                    startNow: () => {
+                        document.getElementById('start-screen').style.display = 'none';
+                        document.getElementById('game-over').style.display = 'none';
+                        resetGame();
+                        state = 'playing';
+                    },
+                    // Simulates frames synchronously without rendering; bot(snapshot) runs before each frame.
+                    runFrames: (count, frameDt, bot) => {
+                        for (let i = 0; i < count && state === 'playing'; i++) {
+                            if (bot) bot(snapshot());
+                            advance(Math.min(frameDt, MAX_FRAME_DT));
+                        }
+                        return snapshot();
+                    },
+                    curves: { omegaTarget, designGap, gapFloor },
+                    constants: {
+                        OVERLAP_ANGLE, LOW, HIGH, JUMP_VELOCITY, GRAVITY, FAST_FALL_VELOCITY, R_PLAYER, R_IN, MAX_HITS,
+                        LOW_TOP, HIGH_BOTTOM, HIT_FORGIVENESS, PITCH, TAU, SIM_STEP, JUMP_BUFFER,
+                        OMEGA_START, OMEGA_MAX, GAP_END, CAM_BACK, CAM_RADIUS
+                    }
                 };
             }
 

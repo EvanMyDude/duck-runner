@@ -14,7 +14,8 @@ You walk up a spiral ramp wrapped around a spinning tower. Obstacles sweep aroun
 
 - Spiral ramp that turns around the tower, with obstacles coming into view as they round the curve
 - 8-hit footing meter; each hit costs you ground on the ramp
-- Endless speed-up every 10 obstacles cleared
+- Continuous speed-up: the tower turns faster and obstacles come closer together with every obstacle you reach. 100 is a good score; 200 is close to the human limit
+- Never impossible: obstacle spacing has a hard floor derived from the jump physics, so every sequence stays clearable with perfect inputs, even at top speed
 - Best score saved in your browser
 - Mobile-friendly with on-screen buttons
 
@@ -24,4 +25,4 @@ You walk up a spiral ramp wrapped around a spinning tower. Obstacles sweep aroun
 
 ## Development
 
-This game is built using vanilla JavaScript and Three.js without additional frameworks or dependencies. Open the page with `?debug` to expose a `window.__game` hook used for automated testing.
+This game is built using vanilla JavaScript and Three.js without additional frameworks or dependencies. Open the page with `?debug` to expose a `window.__game` hook used for automated testing. To practice the late game, run `__game.startAt(150)` in the console, then press Start.
