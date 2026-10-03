@@ -352,8 +352,9 @@
             let sameTypeRun = 0, lastType = -1;
             let pendingSpacing = null;     // angle to the next spawn, rolled once per spawn
             let simAccumulator = 0;
+            let prevSpin = 0;              // state at the start of the last step, for render interpolation
             const player = {
-                y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0,
+                y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0, prevY: 0, prevSlip: 0,
                 jumpBuffer: 0, invincible: 0, walk: 0, tumble: 0,
                 fall: null
             };
@@ -641,16 +642,17 @@
                         });
                     }
                 }
-                group.userData = { id: spawnIndex, type, phi, hit: false, passed: false, skipped: false, materials };
+                group.userData = { id: spawnIndex, type, phi, prevPhi: phi, hit: false, passed: false, skipped: false, materials };
                 spawnIndex++;
                 scene.add(group);
                 obstacles.push(group);
-                positionObstacle(group);
+                positionObstacle(group, 1);
                 return group;
             }
 
-            function positionObstacle(o) {
-                const phi = o.userData.phi;
+            function positionObstacle(o, alpha) {
+                const d = o.userData;
+                const phi = d.prevPhi + (d.phi - d.prevPhi) * alpha;
                 o.position.set(0, surfaceY(phi), 0);
                 o.rotation.set(0, phi, 0);
             }
@@ -699,9 +701,9 @@
             }
 
             function setDuck(held) {
-                if (held && !input.duckHeld) {
+                if (held && !input.duckHeld && state === 'playing') {
                     input.duckPressed = true; // a press in mid-air triggers a fast-fall
-                    if (state === 'playing') soundManager.playDuck();
+                    soundManager.playDuck();
                 }
                 input.duckHeld = held;
             }
@@ -781,9 +783,10 @@
                 omega = 0;
                 simAccumulator = 0;
                 Object.assign(player, {
-                    y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0,
+                    y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0, prevY: 0, prevSlip: 0,
                     jumpBuffer: 0, invincible: 0, walk: 0, tumble: 0, fall: null
                 });
+                prevSpin = spin;
                 input.jumpQueued = false;
                 input.duckPressed = false;
                 playerGroup.visible = true;
@@ -832,6 +835,7 @@
                     backgroundMusic.pause();
                 } else if (state === 'paused') {
                     state = pausedFrom;
+                    input.duckPressed = false;
                     document.getElementById('pause-screen').style.display = 'none';
                     playMusic();
                     clock.getDelta(); // drop the time spent paused
@@ -840,7 +844,9 @@
 
             function gameOver() {
                 state = 'over';
-                const isNewBest = score > best;
+                const tuned = debugOverrides.startN > 0 || debugOverrides.omega !== null
+                    || debugOverrides.exactFloor || debugOverrides.pattern !== null;
+                const isNewBest = !tuned && score > best; // debug-tuned runs don't count toward BEST
                 if (isNewBest) {
                     best = score;
                     saveBest(best);
@@ -921,7 +927,17 @@
                 for (let i = 0; i < steps; i++) step(SIM_STEP);
             }
 
+            // Remembers where things were before this step so render() can draw between steps.
+            function savePrevious() {
+                prevSpin = spin;
+                for (const o of obstacles) o.userData.prevPhi = o.userData.phi;
+                player.prevY = player.y;
+                player.prevSlip = player.slip;
+                if (player.fall) player.fall.prevPos.copy(player.fall.pos);
+            }
+
             function step(h) {
+                savePrevious();
                 const active = state === 'playing' || state === 'falling';
                 const targetOmega = active ? omegaTarget(reachedCount()) : (state === 'countdown' ? 0 : IDLE_OMEGA);
                 omega += (targetOmega - omega) * Math.min(1, h * 3);
@@ -1056,6 +1072,7 @@
                 const downhill = new THREE.Vector3(Math.sin(phi), 0, Math.cos(phi));
                 player.fall = {
                     pos,
+                    prevPos: pos.clone(),
                     vel: outward.multiplyScalar(5).add(downhill.multiplyScalar(2)).setY(6),
                     time: 0
                 };
@@ -1072,19 +1089,23 @@
             }
 
             // ---------- Rendering ----------
+            // Draws the world between the last two simulation steps, so motion stays smooth at any
+            // refresh rate (e.g. 144 Hz runs some frames with no simulation step at all).
             function render() {
+                const alpha = simAccumulator / SIM_STEP;
+                const lerp = (a, b) => a + (b - a) * alpha;
                 const wrap = TAU / DECOR_REPEAT;
-                const wrapped = spin % wrap;
+                const wrapped = lerp(prevSpin, spin) % wrap;
                 spinGroup.rotation.y = -wrapped;
                 spinGroup.position.y = -surfaceY(wrapped);
-                for (const o of obstacles) positionObstacle(o);
+                for (const o of obstacles) positionObstacle(o, alpha);
 
-                const phiP = playerPhi();
+                const phiP = PHI_HOME - lerp(player.prevSlip, player.slip) * KNOCK_ANGLE;
                 if (player.fall) {
-                    playerGroup.position.copy(player.fall.pos);
+                    playerGroup.position.lerpVectors(player.fall.prevPos, player.fall.pos, alpha);
                 } else {
                     const bob = player.grounded && player.crouch > 0.9 ? Math.abs(Math.sin(player.walk)) * 0.06 : 0;
-                    helixPoint(R_PLAYER, phiP, player.y + bob, playerGroup.position);
+                    helixPoint(R_PLAYER, phiP, lerp(player.prevY, player.y) + bob, playerGroup.position);
                     playerGroup.rotation.set(0, phiP, 0);
                     playerBody.scale.y = player.crouch;
                     playerBody.scale.x = playerBody.scale.z = 1 + (1 - player.crouch) * 0.3;
@@ -1152,13 +1173,20 @@
                     duck: setDuck,
                     // Difficulty to start the next run at, e.g. startAt(150) then press Start.
                     startAt: (n) => { debugOverrides.startN = Math.max(0, Math.floor(n)); },
+                    // Speeds up real-time play; still capped at MAX_FRAME_DT per frame so input granularity holds.
                     setTimeScale: (t) => { timeScale = t; },
                     // Test-only: fixed speed, every gap exactly at the floor, and/or a repeating type pattern.
-                    override: (o) => { Object.assign(debugOverrides, o); },
+                    override: (o) => {
+                        if (o.omega !== undefined && o.omega !== null && !(o.omega > 0 && Number.isFinite(o.omega))) {
+                            throw new Error('override.omega must be a positive number or null');
+                        }
+                        Object.assign(debugOverrides, o);
+                    },
                     // Starts a run with no countdown, for synchronous simulation.
                     startNow: () => {
-                        document.getElementById('start-screen').style.display = 'none';
-                        document.getElementById('game-over').style.display = 'none';
+                        for (const id of ['start-screen', 'game-over', 'pause-screen', 'countdown']) {
+                            document.getElementById(id).style.display = 'none';
+                        }
                         resetGame();
                         state = 'playing';
                     },
@@ -1170,6 +1198,8 @@
                         }
                         return snapshot();
                     },
+                    // Advances and renders one frame of the given length; returns the drawn tower angle.
+                    frame: (dt) => { advance(Math.min(dt, MAX_FRAME_DT)); render(); return spinGroup.rotation.y; },
                     curves: { omegaTarget, designGap, gapFloor },
                     constants: {
                         OVERLAP_ANGLE, LOW, HIGH, JUMP_VELOCITY, GRAVITY, FAST_FALL_VELOCITY, R_PLAYER, R_IN, MAX_HITS,
