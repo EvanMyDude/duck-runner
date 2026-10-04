@@ -218,22 +218,82 @@
             font-weight: bold;
             display: none;
         }
+        /* Intro countdown, synced to GetReady.mp3 */
         #countdown {
             position: absolute;
-            top: 45%;
+            top: 42%;
             left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: clamp(80px, 18vw, 180px);
-            color: white;
-            text-shadow: 0 0 30px rgba(80, 200, 255, 0.9);
+            width: 0;
+            height: 0;
             z-index: 300;
             display: none;
-            font-weight: bold;
+            pointer-events: none;
+        }
+        #countdown-text, #countdown-ring {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform: translate(-50%, -50%);
+            opacity: 0;
+        }
+        #countdown-text {
+            font-size: clamp(90px, 20vw, 200px);
+            font-weight: 900;
+            color: #eafcff;
+            white-space: nowrap;
+            text-shadow: 0 0 18px rgba(64, 224, 255, 0.95), 0 0 48px rgba(26, 166, 200, 0.8), 0 4px 0 #0e6f8a;
+        }
+        #countdown-ring {
+            width: clamp(150px, 30vw, 300px);
+            height: clamp(150px, 30vw, 300px);
+            border-radius: 50%;
+            border: 4px solid rgba(64, 224, 255, 0.9);
+            box-shadow: 0 0 24px rgba(64, 224, 255, 0.8), inset 0 0 24px rgba(64, 224, 255, 0.5);
+        }
+        #countdown.ready #countdown-text {
+            font-size: clamp(34px, 8vw, 80px);
+            letter-spacing: 0.25em;
+            padding-left: 0.25em; /* balances the trailing letter-spacing */
+        }
+        #countdown.ready #countdown-ring { display: none; }
+        #countdown.go #countdown-text {
+            color: #fff6c8;
+            text-shadow: 0 0 18px rgba(255, 216, 74, 1), 0 0 56px rgba(255, 160, 0, 0.9), 0 5px 0 #b86b00;
+        }
+        #countdown.go #countdown-ring { border-color: rgba(255, 216, 74, 0.95); box-shadow: 0 0 30px rgba(255, 180, 0, 0.9); }
+        #countdown.animate #countdown-text { animation: cd-pop var(--cd-dur, 1s) cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards; }
+        #countdown.animate #countdown-ring { animation: cd-ring var(--cd-dur, 1s) ease-out forwards; }
+        #countdown.go.animate #countdown-text { animation: cd-go var(--cd-dur, 1s) cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards; }
+        #countdown.go.animate #countdown-ring { animation: cd-burst var(--cd-dur, 1s) ease-out forwards; }
+        @keyframes cd-pop {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(1.9); filter: blur(8px); }
+            22% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
+            78% { opacity: 1; transform: translate(-50%, -50%) scale(0.97); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+        }
+        @keyframes cd-ring {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(1.8); }
+            25% { opacity: 1; }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(0.55); }
+        }
+        @keyframes cd-go {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4) rotate(-8deg); }
+            18% { opacity: 1; transform: translate(-50%, -50%) scale(1.15) rotate(2deg); }
+            35% { transform: translate(-50%, -50%) scale(1) rotate(0); }
+            70% { opacity: 1; }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.6); filter: blur(4px); }
+        }
+        @keyframes cd-burst {
+            0% { opacity: 1; transform: translate(-50%, -50%) scale(0.3); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(3.2); }
         }
     </style>
 </head>
 <body>
     <div id="game-container" tabindex="-1">
+        <audio id="get-ready" preload="auto">
+            <source src="GetReady.mp3" type="audio/mpeg">
+        </audio>
         <audio id="background-music" loop>
             <source src="Starlight Blue Background.mp3" type="audio/mpeg">
         </audio>
@@ -250,7 +310,7 @@
         </div>
         <button id="duck-button" class="touch-button">DUCK</button>
         <button id="jump-button" class="touch-button">JUMP</button>
-        <div id="countdown">3</div>
+        <div id="countdown"><div id="countdown-ring"></div><div id="countdown-text"></div></div>
         <div id="start-screen">
             <h1 id="start-title">Duck Runner</h1>
             <p id="start-subtitle">Climb the twisted tower. Jump the low bars, duck the duck signs. Every hit knocks you back down the ramp. Eight hits and you're in the abyss.</p>
@@ -362,7 +422,25 @@
             let countdownTimers = [];
             let timeScale = 1;
             const debugOverrides = { startN: 0, omega: null, exactFloor: false, pattern: null };
-            let backgroundMusic, isMuted = false;
+            let backgroundMusic, getReadyCue, isMuted = false;
+            const MUSIC_VOLUME = 0.5;
+
+            // ---- Intro cue (GetReady.mp3) ----
+            // Word onsets measured from the file's speech-band envelope. The ramp starts turning and
+            // inputs go live at GO. The countdown follows the cue's own playback clock, so the text
+            // stays in sync even if the audio starts late; with sound muted or blocked it runs on a timer.
+            const INTRO_STEPS = [
+                { t: 0.25, text: 'GET READY', cls: 'ready' },
+                { t: 1.85, text: '3' },
+                { t: 2.92, text: '2' },
+                { t: 4.08, text: '1' },
+                { t: 5.10, text: 'GO!', cls: 'go' }
+            ];
+            const INTRO_GO = INTRO_STEPS[INTRO_STEPS.length - 1].t;
+            const CUE_FADE_DELAY = 0.9, CUE_FADE_TIME = 1.3; // after GO, the cue's tail fades out...
+            const MUSIC_FADE_TIME = 1.5;                      // ...while the background music fades in
+            let intro = null;      // countdown in progress: { mode: 'wait' | 'audio' | 'timer', base, step }
+            let crossfade = null;  // after GO: { start } (performance.now() ms)
             let jumpSound, duckSound, collisionSound;
 
             const soundManager = {
@@ -747,7 +825,8 @@
                 document.getElementById('mute-button').addEventListener('click', toggleMute);
 
                 backgroundMusic = document.getElementById('background-music');
-                backgroundMusic.volume = 0.5;
+                backgroundMusic.volume = MUSIC_VOLUME;
+                getReadyCue = document.getElementById('get-ready');
 
                 window.addEventListener('resize', () => {
                     fitCamera();
@@ -761,8 +840,14 @@
             function toggleMute() {
                 isMuted = !isMuted;
                 document.getElementById('mute-button').textContent = isMuted ? '🔇' : '🔊';
-                if (isMuted) backgroundMusic.pause();
-                else if (state !== 'menu' && state !== 'over' && state !== 'paused') playMusic();
+                if (isMuted) {
+                    backgroundMusic.pause();
+                    // keep the countdown running on a timer from where the cue was
+                    if (intro && intro.mode === 'audio') runIntroOnTimer(getReadyCue.currentTime);
+                    getReadyCue.pause();
+                } else if (state === 'playing' || state === 'falling') {
+                    playMusic();
+                }
                 soundManager.setMute(isMuted);
             }
 
@@ -774,6 +859,7 @@
             function resetGame() {
                 for (const t of countdownTimers) clearTimeout(t);
                 countdownTimers = [];
+                stopIntro();
                 clearObstacles();
                 score = 0;
                 hits = 0;
@@ -809,23 +895,105 @@
                 document.getElementById('game-over').style.display = 'none';
                 document.getElementById('pause-screen').style.display = 'none';
                 resetGame();
-                playMusic();
+                backgroundMusic.pause();
                 document.getElementById('game-container').focus();
-                startCountdown(() => { state = 'playing'; });
+                startIntro();
             }
 
-            function startCountdown(callback) {
+            // ---------- Intro countdown ----------
+            function startIntro() {
                 state = 'countdown';
+                intro = { mode: 'wait', base: 0, step: -1 };
+                getReadyCue.currentTime = 0;
+                getReadyCue.volume = 1;
+                if (isMuted) { runIntroOnTimer(0); return; }
+                const session = intro;
+                getReadyCue.play()
+                    .then(() => { if (intro === session && intro.mode === 'wait') intro.mode = 'audio'; })
+                    .catch(() => { if (intro === session && intro.mode === 'wait') runIntroOnTimer(0); });
+                // If the cue hasn't started within 1.5 s (slow load), don't leave the player waiting.
+                countdownTimers.push(setTimeout(() => {
+                    if (intro === session && intro.mode === 'wait') { getReadyCue.pause(); runIntroOnTimer(0); }
+                }, 1500));
+            }
+
+            function runIntroOnTimer(fromTime) {
+                if (!intro) return;
+                intro.mode = 'timer';
+                intro.base = performance.now() - fromTime * 1000;
+            }
+
+            function introTime() {
+                if (intro.mode === 'audio') {
+                    if (!getReadyCue.paused && !getReadyCue.ended) return getReadyCue.currentTime;
+                    runIntroOnTimer(getReadyCue.currentTime); // audio stopped early: continue on a timer
+                }
+                if (intro.mode === 'timer') return (performance.now() - intro.base) / 1000;
+                return 0;
+            }
+
+            function updateIntro() {
+                if (intro && state === 'countdown') {
+                    const t = introTime();
+                    let step = intro.step;
+                    while (step + 1 < INTRO_STEPS.length && INTRO_STEPS[step + 1].t <= t) step++;
+                    if (step !== intro.step) {
+                        intro.step = step;
+                        showIntroStep(step);
+                        if (step === INTRO_STEPS.length - 1) beginPlay();
+                    }
+                }
+                if (crossfade) updateCrossfade();
+            }
+
+            function showIntroStep(i) {
                 const el = document.getElementById('countdown');
-                const steps = ['3', '2', '1', 'GO!'];
-                steps.forEach((text, i) => {
-                    countdownTimers.push(setTimeout(() => {
-                        el.style.display = 'block';
-                        el.textContent = text;
-                        if (text === 'GO!') callback();
-                    }, i * 700));
-                });
-                countdownTimers.push(setTimeout(() => { el.style.display = 'none'; }, steps.length * 700));
+                const s = INTRO_STEPS[i];
+                const next = INTRO_STEPS[i + 1];
+                el.className = s.cls || '';
+                el.style.setProperty('--cd-dur', (next ? Math.min(next.t - s.t, 1.4) : 1.1) + 's');
+                document.getElementById('countdown-text').textContent = s.text;
+                el.style.display = 'block';
+                void el.offsetWidth; // restart the CSS animation
+                el.classList.add('animate');
+            }
+
+            // GO: the ramp starts turning (omega ramps up from 0), inputs go live, and the cue's
+            // tail crossfades into the background music, which starts from the top each game.
+            function beginPlay() {
+                state = 'playing';
+                intro = null;
+                clock.getDelta();
+                crossfade = { start: performance.now() };
+                if (!isMuted) {
+                    backgroundMusic.currentTime = 0;
+                    backgroundMusic.volume = 0;
+                    playMusic();
+                }
+                countdownTimers.push(setTimeout(() => {
+                    document.getElementById('countdown').style.display = 'none';
+                }, 1200));
+            }
+
+            function updateCrossfade() {
+                const since = (performance.now() - crossfade.start) / 1000;
+                const clamp01 = (x) => Math.max(0, Math.min(1, x));
+                getReadyCue.volume = 1 - clamp01((since - CUE_FADE_DELAY) / CUE_FADE_TIME);
+                backgroundMusic.volume = MUSIC_VOLUME * clamp01(since / MUSIC_FADE_TIME);
+                if (since >= Math.max(CUE_FADE_DELAY + CUE_FADE_TIME, MUSIC_FADE_TIME)) finishCrossfade();
+            }
+
+            function finishCrossfade() {
+                crossfade = null;
+                getReadyCue.pause();
+                backgroundMusic.volume = MUSIC_VOLUME;
+            }
+
+            function stopIntro() {
+                intro = null;
+                if (crossfade) finishCrossfade();
+                if (getReadyCue) getReadyCue.pause();
+                document.getElementById('countdown').style.display = 'none';
             }
 
             function togglePause() {
@@ -833,6 +1001,7 @@
                     pausedFrom = state;
                     state = 'paused';
                     document.getElementById('pause-screen').style.display = 'flex';
+                    if (crossfade) finishCrossfade();
                     backgroundMusic.pause();
                 } else if (state === 'paused') {
                     state = pausedFrom;
@@ -855,6 +1024,7 @@
                 document.getElementById('final-score').textContent = `Obstacles cleared: ${score}`;
                 document.getElementById('new-best').style.display = isNewBest ? 'block' : 'none';
                 document.getElementById('game-over').style.display = 'block';
+                if (crossfade) finishCrossfade();
                 backgroundMusic.pause();
                 updateHud();
             }
@@ -1153,6 +1323,7 @@
 
             function animate() {
                 requestAnimationFrame(animate);
+                updateIntro();
                 advance(Math.min(clock.getDelta() * timeScale, MAX_FRAME_DT));
                 render();
             }
@@ -1185,7 +1356,7 @@
             // ---------- Debug hook (?debug) for automated testing ----------
             function exposeDebug() {
                 const snapshot = () => ({
-                    state, score, hits, skipped, n: reachedCount(), spawnIndex, omega,
+                    state, introMode: intro ? intro.mode : null, score, hits, skipped, n: reachedCount(), spawnIndex, omega,
                     omegaTarget: omegaTarget(reachedCount()),
                     phiP: playerPhi(), y: player.y, vy: player.vy, grounded: player.grounded,
                     duckTimer: player.duckTimer, duckQueued: player.duckQueued, crouch: player.crouch, invincible: player.invincible,
