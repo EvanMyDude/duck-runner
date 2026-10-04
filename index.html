@@ -925,8 +925,12 @@
 
             function introTime() {
                 if (intro.mode === 'audio') {
-                    if (!getReadyCue.paused && !getReadyCue.ended) return getReadyCue.currentTime;
-                    runIntroOnTimer(getReadyCue.currentTime); // audio stopped early: continue on a timer
+                    const t = getReadyCue.currentTime, now = performance.now();
+                    if (t !== intro.lastCueTime) { intro.lastCueTime = t; intro.lastAdvance = now; }
+                    const stalled = now - (intro.lastAdvance || now) > 750; // buffering that doesn't recover
+                    if (!getReadyCue.paused && !getReadyCue.ended && !stalled) return t;
+                    if (stalled) getReadyCue.pause();
+                    runIntroOnTimer(t); // audio stopped early: continue on a timer
                 }
                 if (intro.mode === 'timer') return (performance.now() - intro.base) / 1000;
                 return 0;
