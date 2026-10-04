@@ -132,6 +132,8 @@
             .touch-button { display: flex; }
             #instructions { display: none !important; }
             #footing { bottom: calc(140px + env(safe-area-inset-bottom)); }
+            #controls-info .keys-only { display: none; }
+            #controls-info .touch-only { display: block; }
         }
         #start-screen {
             position: absolute;
@@ -185,6 +187,10 @@
             font-size: clamp(13px, 1.8vw, 17px);
         }
         #controls-info p { margin: 6px 0; }
+        .touch-only { display: none; }
+        /* The title screen covers the in-game HUD and buttons; hide them there so they don't show through. */
+        #game-container.at-title #hud, #game-container.at-title #footing,
+        #game-container.at-title #instructions, #game-container.at-title .touch-button { visibility: hidden; }
         #pause-screen {
             position: absolute;
             top: 0;
@@ -290,7 +296,7 @@
     </style>
 </head>
 <body>
-    <div id="game-container" tabindex="-1">
+    <div id="game-container" class="at-title" tabindex="-1">
         <audio id="get-ready" preload="auto">
             <source src="GetReady.mp3" type="audio/mpeg">
         </audio>
@@ -313,13 +319,19 @@
         <div id="countdown"><div id="countdown-ring"></div><div id="countdown-text"></div></div>
         <div id="start-screen">
             <h1 id="start-title">Duck Runner</h1>
-            <p id="start-subtitle">Climb the twisted tower. Jump the low bars, duck the duck signs. Every hit knocks you back down the ramp. Eight hits and you're in the abyss.</p>
+            <p id="start-subtitle">Climb the twisted tower. Jump the low bars, duck the duck signs. Every hit knocks you back down the ramp. <span id="hits-to-fall">Seven</span> hits and you're in the abyss.</p>
             <div id="start-best"></div>
             <button id="start-button">Start Game</button>
             <div id="controls-info">
-                <p>Jump: SPACE / ↑ / W</p>
-                <p>Duck: ↓ / S, tap once for each arm (a tap in mid-air ducks on landing)</p>
-                <p>Pause: P / ESC</p>
+                <div class="keys-only">
+                    <p><b>Jump</b> &nbsp;Space / ↑ / W</p>
+                    <p><b>Duck</b> &nbsp;↓ / S, once per arm</p>
+                    <p><b>Pause</b> &nbsp;P / Esc</p>
+                </div>
+                <div class="touch-only">
+                    <p><b>JUMP</b> button (right) for low bars</p>
+                    <p><b>DUCK</b> button (left), once per arm</p>
+                </div>
             </div>
         </div>
         <div id="pause-screen">
@@ -643,6 +655,8 @@
                 setupEventListeners();
                 updateHud();
                 showBestOnStart();
+                const words = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
+                document.getElementById('hits-to-fall').textContent = words[MAX_HITS] || String(MAX_HITS);
                 if (DEBUG) exposeDebug();
                 animate();
             }
@@ -972,6 +986,7 @@
 
             function startGame() {
                 document.getElementById('start-screen').style.display = 'none';
+                document.getElementById('game-container').classList.remove('at-title');
                 document.getElementById('game-over').style.display = 'none';
                 document.getElementById('pause-screen').style.display = 'none';
                 soundManager.unlock();
@@ -1506,6 +1521,7 @@
                     },
                     // Starts a run with no countdown, for synchronous simulation.
                     startNow: () => {
+                        document.getElementById('game-container').classList.remove('at-title');
                         for (const id of ['start-screen', 'game-over', 'pause-screen', 'countdown']) {
                             document.getElementById(id).style.display = 'none';
                         }

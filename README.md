@@ -1,7 +1,7 @@
 # duck-runner
 A 3D tower-climbing obstacle game built with Three.js, inspired by the *Twisted System* mini-game from Fusion Frenzy.
 
-You walk up a spiral ramp wrapped around a spinning tower. Obstacles sweep around the tower toward you: jump the low blue bars and duck under the red arms with duck signs. Every hit knocks you back down the ramp, and the eighth hit throws you off into the abyss. The tower keeps speeding up for as long as you survive.
+You walk up a spiral ramp wrapped around a spinning tower. Obstacles sweep around the tower toward you: jump the low blue bars and duck under the red arms with duck signs. Every hit knocks you back down the ramp, and the seventh hit throws you off into the abyss. The tower keeps speeding up for as long as you survive.
 
 ## How to Play
 
