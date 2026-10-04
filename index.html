@@ -400,7 +400,13 @@
             const BEST_KEY = 'duckRunnerBest';
             const DEBUG = new URLSearchParams(window.location.search).has('debug');
 
-            let scene, camera, renderer, clock, spinGroup, playerGroup, playerBody, sunLight, abyss;
+            let scene, camera, renderer, clock, spinGroup, playerGroup, playerBody, blobShadow, sunLight, abyss;
+            // Phones render at up to 1.5x pixel density (desktop 2x); if frames still run long,
+            // the density steps down during play (never back up mid-run, to avoid flicker).
+            const IS_TOUCH = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+            let pixelRatio = Math.min(window.devicePixelRatio || 1, IS_TOUCH ? 1.5 : 2);
+            const MIN_PIXEL_RATIO = 1, SLOW_FRAME_MS = 20, QUALITY_WINDOW_MS = 2000;
+            const frameStats = { time: 0, frames: 0, skipFirst: true };
             let obstacleAssets;
             let obstacles = [];
             let state = 'menu', pausedFrom = null;
@@ -441,30 +447,87 @@
             const MUSIC_FADE_TIME = 1.5;                      // ...while the background music fades in
             let intro = null;      // countdown in progress: { mode: 'wait' | 'audio' | 'timer', base, step }
             let crossfade = null;  // after GO: { start } (performance.now() ms)
-            let jumpSound, duckSound, collisionSound;
-
+            // Sound effects play through the Web Audio API: each one is decoded once and started as a
+            // fresh buffer source, which costs the main thread nothing. Restarting an <audio> element
+            // (pause, seek, play) blocks the main thread on mobile and dropped a frame on every tap.
+            // Music and the intro cue are routed through gain nodes too, so their fades also work on
+            // iOS, which ignores <audio>.volume. Without Web Audio it falls back to <audio> elements.
+            const SFX = { jump: ['JumpSound.mp3', 0.5], duck: ['DuckSound.mp3', 0.5], hit: ['Light Impact Sound.mp3', 0.6] };
             const soundManager = {
+                ctx: null, master: null, buffers: {}, gains: {}, fallback: {}, musicGain: null, cueGain: null,
                 init() {
-                    jumpSound = new Audio('JumpSound.mp3');
-                    duckSound = new Audio('DuckSound.mp3');
-                    collisionSound = new Audio('Light Impact Sound.mp3');
-                    jumpSound.volume = 0.5;
-                    duckSound.volume = 0.5;
-                    collisionSound.volume = 0.6;
+                    for (const [name, [url, volume]] of Object.entries(SFX)) {
+                        const a = new Audio(url);
+                        a.volume = volume;
+                        this.fallback[name] = a;
+                    }
                 },
-                play(sound) {
+                // Must run inside a user gesture (Start / Play again) so mobile browsers allow audio.
+                unlock() {
+                    const AC = window.AudioContext || window.webkitAudioContext;
+                    if (!this.ctx && AC) {
+                        try {
+                            this.ctx = new AC();
+                            this.master = this.ctx.createGain();
+                            this.master.connect(this.ctx.destination);
+                            for (const [name, [url, volume]] of Object.entries(SFX)) {
+                                const g = this.ctx.createGain();
+                                g.gain.value = volume;
+                                g.connect(this.master);
+                                this.gains[name] = g;
+                                fetch(url).then(r => r.arrayBuffer())
+                                    .then(data => new Promise((ok, fail) => this.ctx.decodeAudioData(data, ok, fail)))
+                                    .then(buffer => { this.buffers[name] = buffer; })
+                                    .catch(() => {});
+                            }
+                            this.musicGain = this.routeElement(backgroundMusic);
+                            this.cueGain = this.routeElement(getReadyCue);
+                            this.setMusicVolume(MUSIC_VOLUME);
+                        } catch (e) {
+                            this.ctx = null;
+                        }
+                    }
+                    if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
+                },
+                routeElement(el) {
+                    try {
+                        const g = this.ctx.createGain();
+                        this.ctx.createMediaElementSource(el).connect(g);
+                        g.connect(this.ctx.destination);
+                        el.volume = 1;
+                        return g;
+                    } catch (e) {
+                        return null;
+                    }
+                },
+                play(name) {
                     if (isMuted) return;
-                    sound.pause();
-                    sound.currentTime = 0;
-                    sound.play().catch(() => {});
+                    if (this.ctx && this.buffers[name]) {
+                        const source = this.ctx.createBufferSource();
+                        source.buffer = this.buffers[name];
+                        source.connect(this.gains[name]);
+                        source.start();
+                        return;
+                    }
+                    const a = this.fallback[name]; // still decoding, or no Web Audio
+                    a.pause();
+                    a.currentTime = 0;
+                    a.play().catch(() => {});
                 },
-                playJump() { this.play(jumpSound); },
-                playDuck() { this.play(duckSound); },
-                playCollision() { this.play(collisionSound); },
+                playJump() { this.play('jump'); },
+                playDuck() { this.play('duck'); },
+                playCollision() { this.play('hit'); },
                 setMute(muted) {
-                    jumpSound.muted = muted;
-                    duckSound.muted = muted;
-                    collisionSound.muted = muted;
+                    for (const a of Object.values(this.fallback)) a.muted = muted;
+                    if (this.master) this.master.gain.value = muted ? 0 : 1;
+                },
+                setMusicVolume(v) {
+                    if (this.musicGain) this.musicGain.gain.value = v;
+                    else backgroundMusic.volume = v;
+                },
+                setCueVolume(v) {
+                    if (this.cueGain) this.cueGain.gain.value = v;
+                    else getReadyCue.volume = v;
                 }
             };
 
@@ -560,18 +623,13 @@
                 camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
                 fitCamera();
                 renderer = new THREE.WebGLRenderer({ antialias: true });
-                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+                renderer.setPixelRatio(pixelRatio);
                 renderer.setSize(window.innerWidth, window.innerHeight);
-                renderer.shadowMap.enabled = true;
                 document.getElementById('game-container').appendChild(renderer.domElement);
                 clock = new THREE.Clock();
 
                 scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x1a1030, 0.75));
                 sunLight = new THREE.DirectionalLight(0xffffff, 0.85);
-                sunLight.castShadow = true;
-                sunLight.shadow.mapSize.set(1024, 1024);
-                const sc = sunLight.shadow.camera;
-                sc.left = -6; sc.right = 6; sc.top = 6; sc.bottom = -6; sc.near = 1; sc.far = 40;
                 scene.add(sunLight);
                 scene.add(sunLight.target);
 
@@ -597,13 +655,13 @@
                 scene.add(spinGroup);
 
                 const segments = Math.round((PHI_MAX - PHI_MIN) / TAU * 160);
-                const rampMat = new THREE.MeshStandardMaterial({
-                    color: 0x2f4a48, roughness: 0.8, metalness: 0.2, side: THREE.DoubleSide
+                const rampMat = new THREE.MeshLambertMaterial({
+                    color: 0x2f4a48, side: THREE.DoubleSide
                 });
-                const undersideMat = new THREE.MeshStandardMaterial({
-                    color: 0x1b2a2a, roughness: 0.9, side: THREE.DoubleSide
+                const undersideMat = new THREE.MeshLambertMaterial({
+                    color: 0x1b2a2a, side: THREE.DoubleSide
                 });
-                const lipMat = new THREE.MeshStandardMaterial({
+                const lipMat = new THREE.MeshLambertMaterial({
                     color: 0x2ab8d8, emissive: 0x0e6f8a, emissiveIntensity: 0.8, side: THREE.DoubleSide
                 });
                 const strips = [
@@ -611,18 +669,14 @@
                     [helixStrip(R_IN, -RAMP_THICKNESS, R_OUT, -RAMP_THICKNESS, PHI_MIN, PHI_MAX, segments), undersideMat],
                     [helixStrip(R_OUT, 0, R_OUT, -RAMP_THICKNESS, PHI_MIN, PHI_MAX, segments), lipMat]
                 ];
-                for (const [geometry, material] of strips) {
-                    const mesh = new THREE.Mesh(geometry, material);
-                    mesh.receiveShadow = true;
-                    spinGroup.add(mesh);
-                }
+                for (const [geometry, material] of strips) spinGroup.add(new THREE.Mesh(geometry, material));
 
                 // Cross stripes on the ramp surface and studs along the lip make the motion readable.
                 const stripeCount = Math.floor((PHI_MAX - PHI_MIN) / (TAU / (DECOR_REPEAT * 2)));
                 const stripeGeo = new THREE.BoxGeometry(R_OUT - R_IN - 0.2, 0.03, 0.22);
-                const stripeMat = new THREE.MeshStandardMaterial({ color: 0x1c2e2c, roughness: 1 });
+                const stripeMat = new THREE.MeshLambertMaterial({ color: 0x1c2e2c });
                 const studGeo = new THREE.BoxGeometry(0.18, 0.12, 0.3);
-                const studMat = new THREE.MeshStandardMaterial({ color: 0xffb000, emissive: 0xff8800, emissiveIntensity: 1 });
+                const studMat = new THREE.MeshLambertMaterial({ color: 0xffb000, emissive: 0xff8800, emissiveIntensity: 1 });
                 const stripes = new THREE.InstancedMesh(stripeGeo, stripeMat, stripeCount);
                 const studs = new THREE.InstancedMesh(studGeo, studMat, stripeCount);
                 const dummy = new THREE.Object3D();
@@ -635,27 +689,29 @@
                     dummy.updateMatrix();
                     studs.setMatrixAt(i, dummy.matrix);
                 }
-                stripes.receiveShadow = true;
                 spinGroup.add(stripes);
                 spinGroup.add(studs);
 
-                const towerMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4a, roughness: 0.6, metalness: 0.4 });
+                const towerMat = new THREE.MeshLambertMaterial({ color: 0x3a3f4a });
                 const tower = new THREE.Mesh(new THREE.CylinderGeometry(R_IN, R_IN, 120, 48, 1, true), towerMat);
-                tower.receiveShadow = true;
                 spinGroup.add(tower);
-                const seamMat = new THREE.MeshStandardMaterial({ color: 0x24282f, roughness: 0.8 });
-                const glowMat = new THREE.MeshStandardMaterial({ color: 0x66f0ff, emissive: 0x33c8ff, emissiveIntensity: 1.2 });
+                const seamMat = new THREE.MeshLambertMaterial({ color: 0x24282f });
+                const glowMat = new THREE.MeshLambertMaterial({ color: 0x66f0ff, emissive: 0x33c8ff, emissiveIntensity: 1.2 });
+                // Seams are instanced: two draw calls instead of one per seam.
+                const glowCount = Math.ceil(DECOR_REPEAT / 3);
+                const seams = new THREE.InstancedMesh(new THREE.BoxGeometry(0.12, 120, 0.12), seamMat, DECOR_REPEAT - glowCount);
+                const glows = new THREE.InstancedMesh(new THREE.BoxGeometry(0.12, 120, 0.35), glowMat, glowCount);
+                let seamIndex = 0, glowIndex = 0;
                 for (let i = 0; i < DECOR_REPEAT; i++) {
                     const a = i * TAU / DECOR_REPEAT;
-                    const isGlow = i % 3 === 0;
-                    const seam = new THREE.Mesh(
-                        new THREE.BoxGeometry(0.12, 120, isGlow ? 0.35 : 0.12),
-                        isGlow ? glowMat : seamMat
-                    );
-                    seam.position.set(Math.cos(a) * R_IN, 0, -Math.sin(a) * R_IN);
-                    seam.rotation.y = a;
-                    spinGroup.add(seam);
+                    dummy.position.set(Math.cos(a) * R_IN, 0, -Math.sin(a) * R_IN);
+                    dummy.rotation.set(0, a, 0);
+                    dummy.updateMatrix();
+                    if (i % 3 === 0) glows.setMatrixAt(glowIndex++, dummy.matrix);
+                    else seams.setMatrixAt(seamIndex++, dummy.matrix);
                 }
+                spinGroup.add(seams);
+                spinGroup.add(glows);
             }
 
             // Portrait screens get a wider vertical FOV so the ramp ahead stays in frame.
@@ -688,23 +744,32 @@
                     postGeo: new THREE.BoxGeometry(0.18, LOW_TOP, 0.18),
                     armGeo: new THREE.BoxGeometry(length, 0.45, BAR_THICKNESS),
                     signGeo: new THREE.CylinderGeometry(0.42, 0.42, 0.06, 28),
-                    blueMat: new THREE.MeshStandardMaterial({ color: 0x2f7dff, emissive: 0x0b2a80, metalness: 0.5, roughness: 0.4 }),
-                    redMat: new THREE.MeshStandardMaterial({ color: 0xe0442e, emissive: 0x401008, metalness: 0.3, roughness: 0.5 }),
-                    signMat: new THREE.MeshStandardMaterial({ map: duckSignTexture(), emissive: 0x222222 }),
-                    signRimMat: new THREE.MeshStandardMaterial({ color: 0xd7261e })
+                    blueMat: new THREE.MeshLambertMaterial({ color: 0x2f7dff, emissive: 0x0b2a80 }),
+                    redMat: new THREE.MeshLambertMaterial({ color: 0xe0442e, emissive: 0x401008 }),
+                    signMat: new THREE.MeshLambertMaterial({ map: duckSignTexture(), emissive: 0x222222 }),
+                    ghosts: new Map() // shared see-through versions for obstacles that hit the player
                 };
+            }
+
+            function ghostOf(material) {
+                const ghosts = obstacleAssets.ghosts;
+                if (!ghosts.has(material)) {
+                    const g = material.clone();
+                    g.transparent = true;
+                    g.opacity = 0.3;
+                    ghosts.set(material, g);
+                }
+                return ghosts.get(material);
             }
 
             function createObstacle(type, phi) {
                 const a = obstacleAssets;
                 const group = new THREE.Group();
                 const midR = (R_IN + R_OUT) / 2;
-                const materials = [];
-                const own = (material) => { const m = material.clone(); materials.push(m); return m; };
+                // Geometry and materials are shared by every obstacle; nothing is cloned per spawn.
                 const add = (geometry, material, x, y, z, configure) => {
-                    const mesh = new THREE.Mesh(geometry, Array.isArray(material) ? material.map(own) : own(material));
+                    const mesh = new THREE.Mesh(geometry, material);
                     mesh.position.set(x, y, z);
-                    mesh.castShadow = true;
                     if (configure) configure(mesh);
                     group.add(mesh);
                 };
@@ -714,13 +779,13 @@
                 } else {
                     add(a.armGeo, a.redMat, midR, HIGH_BOTTOM + 0.225, 0);
                     for (const x of [R_IN + 1.1, R_OUT - 1.0]) {
-                        // Cylinder material groups: side, top cap (faces downhill toward the player), bottom cap.
-                        add(a.signGeo, [a.signRimMat, a.signMat, a.signRimMat], x, HIGH_BOTTOM + 0.9, 0, m => {
+                        // One material for the whole disc (one draw call): the texture's red border covers the rim.
+                        add(a.signGeo, a.signMat, x, HIGH_BOTTOM + 0.9, 0, m => {
                             m.rotation.x = Math.PI / 2;
                         });
                     }
                 }
-                group.userData = { id: spawnIndex, type, phi, prevPhi: phi, hit: false, passed: false, skipped: false, materials };
+                group.userData = { id: spawnIndex, type, phi, prevPhi: phi, hit: false, passed: false, skipped: false };
                 spawnIndex++;
                 scene.add(group);
                 obstacles.push(group);
@@ -736,15 +801,13 @@
             }
 
             function ghostObstacle(o) {
-                for (const m of o.userData.materials) {
-                    m.transparent = true;
-                    m.opacity = 0.3;
+                for (const mesh of o.children) {
+                    mesh.material = ghostOf(mesh.material);
                 }
             }
 
             function removeObstacle(o) {
                 scene.remove(o);
-                for (const m of o.userData.materials) m.dispose();
             }
 
             function clearObstacles() {
@@ -756,16 +819,32 @@
                 playerGroup = new THREE.Group();
                 const geometry = new THREE.BoxGeometry(PLAYER_WIDTH, PLAYER_HEIGHT, PLAYER_DEPTH);
                 geometry.translate(0, PLAYER_HEIGHT / 2, 0); // pivot at the feet so crouching keeps them planted
-                playerBody = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0x1e90ff, emissive: 0x0a2a55 }));
-                playerBody.castShadow = true;
+                playerBody = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color: 0x1e90ff, emissive: 0x0a2a55 }));
                 const visor = new THREE.Mesh(
                     new THREE.BoxGeometry(PLAYER_WIDTH * 0.8, 0.16, 0.06),
-                    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x88ddff, emissiveIntensity: 0.8 })
+                    new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x88ddff, emissiveIntensity: 0.8 })
                 );
                 visor.position.set(0, PLAYER_HEIGHT * 0.78, -PLAYER_DEPTH / 2 - 0.02);
                 playerBody.add(visor);
                 playerGroup.add(playerBody);
                 scene.add(playerGroup);
+
+                // A soft blob under the player stands in for a real-time shadow map, which re-drew the
+                // whole scene every frame. It shrinks and fades as the player rises, to read jumps.
+                const blobTexture = makeCanvasTexture(64, (ctx, size) => {
+                    const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+                    g.addColorStop(0, 'rgba(0, 0, 0, 0.9)');
+                    g.addColorStop(0.55, 'rgba(0, 0, 0, 0.55)');
+                    g.addColorStop(1, 'rgba(0, 0, 0, 0)');
+                    ctx.fillStyle = g;
+                    ctx.fillRect(0, 0, size, size);
+                });
+                const blobGeometry = new THREE.PlaneGeometry(PLAYER_WIDTH * 2.1, PLAYER_DEPTH * 2.4);
+                blobGeometry.rotateX(-Math.PI / 2);
+                blobShadow = new THREE.Mesh(blobGeometry, new THREE.MeshBasicMaterial({
+                    map: blobTexture, transparent: true, depthWrite: false
+                }));
+                scene.add(blobShadow);
             }
 
             // ---------- Input ----------
@@ -825,8 +904,8 @@
                 document.getElementById('mute-button').addEventListener('click', toggleMute);
 
                 backgroundMusic = document.getElementById('background-music');
-                backgroundMusic.volume = MUSIC_VOLUME;
                 getReadyCue = document.getElementById('get-ready');
+                soundManager.setMusicVolume(MUSIC_VOLUME);
 
                 window.addEventListener('resize', () => {
                     fitCamera();
@@ -839,6 +918,7 @@
 
             function toggleMute() {
                 isMuted = !isMuted;
+                if (!isMuted) soundManager.unlock();
                 document.getElementById('mute-button').textContent = isMuted ? '🔇' : '🔊';
                 if (isMuted) {
                     backgroundMusic.pause();
@@ -894,6 +974,7 @@
                 document.getElementById('start-screen').style.display = 'none';
                 document.getElementById('game-over').style.display = 'none';
                 document.getElementById('pause-screen').style.display = 'none';
+                soundManager.unlock();
                 resetGame();
                 backgroundMusic.pause();
                 document.getElementById('game-container').focus();
@@ -905,7 +986,7 @@
                 state = 'countdown';
                 intro = { mode: 'wait', base: 0, step: -1 };
                 getReadyCue.currentTime = 0;
-                getReadyCue.volume = 1;
+                soundManager.setCueVolume(1);
                 if (isMuted) { runIntroOnTimer(0); return; }
                 const session = intro;
                 getReadyCue.play()
@@ -971,7 +1052,7 @@
                 crossfade = { start: performance.now() };
                 if (!isMuted) {
                     backgroundMusic.currentTime = 0;
-                    backgroundMusic.volume = 0;
+                    soundManager.setMusicVolume(0);
                     playMusic();
                 }
                 countdownTimers.push(setTimeout(() => {
@@ -982,15 +1063,15 @@
             function updateCrossfade() {
                 const since = (performance.now() - crossfade.start) / 1000;
                 const clamp01 = (x) => Math.max(0, Math.min(1, x));
-                getReadyCue.volume = 1 - clamp01((since - CUE_FADE_DELAY) / CUE_FADE_TIME);
-                backgroundMusic.volume = MUSIC_VOLUME * clamp01(since / MUSIC_FADE_TIME);
+                soundManager.setCueVolume(1 - clamp01((since - CUE_FADE_DELAY) / CUE_FADE_TIME));
+                soundManager.setMusicVolume(MUSIC_VOLUME * clamp01(since / MUSIC_FADE_TIME));
                 if (since >= Math.max(CUE_FADE_DELAY + CUE_FADE_TIME, MUSIC_FADE_TIME)) finishCrossfade();
             }
 
             function finishCrossfade() {
                 crossfade = null;
                 getReadyCue.pause();
-                backgroundMusic.volume = MUSIC_VOLUME;
+                soundManager.setMusicVolume(MUSIC_VOLUME);
             }
 
             function stopIntro() {
@@ -1010,6 +1091,7 @@
                 } else if (state === 'paused') {
                     state = pausedFrom;
                     input.duckPressed = false;
+                    soundManager.unlock(); // phones can suspend audio while paused or backgrounded
                     document.getElementById('pause-screen').style.display = 'none';
                     playMusic();
                     clock.getDelta(); // drop the time spent paused
@@ -1306,11 +1388,17 @@
                 for (const o of obstacles) positionObstacle(o, alpha);
 
                 const phiP = PHI_HOME - lerp(player.prevSlip, player.slip) * KNOCK_ANGLE;
+                blobShadow.visible = !player.fall;
                 if (player.fall) {
                     playerGroup.position.lerpVectors(player.fall.prevPos, player.fall.pos, alpha);
                 } else {
                     const bob = player.grounded && player.crouch > 0.9 ? Math.abs(Math.sin(player.walk)) * 0.06 : 0;
-                    helixPoint(R_PLAYER, phiP, lerp(player.prevY, player.y) + bob, playerGroup.position);
+                    const y = lerp(player.prevY, player.y);
+                    helixPoint(R_PLAYER, phiP, y + bob, playerGroup.position);
+                    placeOnHelix(blobShadow, R_PLAYER, phiP, 0.045);
+                    const lift = 1 / (1 + y * 0.45);
+                    blobShadow.scale.set(lift, 1, lift);
+                    blobShadow.material.opacity = Math.min(1, 1.15 * lift);
                     playerGroup.rotation.set(0, phiP, 0);
                     playerBody.scale.y = player.crouch;
                     playerBody.scale.x = playerBody.scale.z = 1 + (1 - player.crouch) * 0.3;
@@ -1334,8 +1422,29 @@
             function animate() {
                 requestAnimationFrame(animate);
                 updateIntro();
-                advance(Math.min(clock.getDelta() * timeScale, MAX_FRAME_DT));
+                const frameDt = clock.getDelta();
+                adaptQuality(frameDt);
+                advance(Math.min(frameDt * timeScale, MAX_FRAME_DT));
                 render();
+            }
+
+            // Steps the render resolution down if frames average longer than SLOW_FRAME_MS during play.
+            function adaptQuality(frameDt) {
+                if (state !== 'playing' || pixelRatio <= MIN_PIXEL_RATIO) {
+                    frameStats.time = 0; frameStats.frames = 0;
+                    return;
+                }
+                frameStats.time += frameDt * 1000;
+                frameStats.frames++;
+                if (frameStats.time < QUALITY_WINDOW_MS) return;
+                const average = frameStats.time / frameStats.frames;
+                frameStats.time = 0; frameStats.frames = 0;
+                if (frameStats.skipFirst) { frameStats.skipFirst = false; return; } // warm-up window
+                if (average > SLOW_FRAME_MS) {
+                    pixelRatio = Math.max(MIN_PIXEL_RATIO, pixelRatio - 0.25);
+                    renderer.setPixelRatio(pixelRatio);
+                    renderer.setSize(window.innerWidth, window.innerHeight);
+                }
             }
 
             // ---------- HUD ----------
@@ -1356,11 +1465,18 @@
                 });
             }
 
+            const hudText = {};
+            function setText(id, text) {
+                if (hudText[id] === text) return;
+                hudText[id] = text;
+                document.getElementById(id).textContent = text;
+            }
+
             function updateHud() {
-                document.getElementById('score-display').textContent = score;
+                setText('score-display', String(score));
                 const speed = omegaTarget(reachedCount()) / OMEGA_START;
-                document.getElementById('level-display').textContent = `SPEED ${speed.toFixed(1)}×`;
-                document.getElementById('best-display').textContent = `BEST ${Math.max(best, score)}`;
+                setText('level-display', `SPEED ${speed.toFixed(1)}×`);
+                setText('best-display', `BEST ${Math.max(best, score)}`);
             }
 
             // ---------- Debug hook (?debug) for automated testing ----------
@@ -1407,6 +1523,12 @@
                     // Advances and renders one frame of the given length; returns the drawn tower angle.
                     frame: (dt) => { advance(Math.min(dt, MAX_FRAME_DT)); render(); return spinGroup.rotation.y; },
                     curves: { omegaTarget, designGap, gapFloor },
+                    audio: () => ({
+                        webAudio: !!soundManager.ctx, ctxState: soundManager.ctx && soundManager.ctx.state,
+                        music: soundManager.musicGain ? soundManager.musicGain.gain.value : backgroundMusic.volume,
+                        cue: soundManager.cueGain ? soundManager.cueGain.gain.value : getReadyCue.volume,
+                        pixelRatio
+                    }),
                     constants: {
                         OVERLAP_ANGLE, LOW, HIGH, JUMP_VELOCITY, GRAVITY, JUMP_TIME, DUCK_TIME, LOW_RISE_TIME, R_PLAYER, R_IN, MAX_HITS,
                         LOW_TOP, HIGH_BOTTOM, HIT_FORGIVENESS, PITCH, TAU, SIM_STEP, JUMP_BUFFER,
