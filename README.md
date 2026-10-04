@@ -6,7 +6,7 @@ You walk up a spiral ramp wrapped around a spinning tower. Obstacles sweep aroun
 ## How to Play
 
 - **SPACE / UP ARROW / W**: Jump over low bars
-- **DOWN ARROW / S (tap)**: Duck under duck-sign arms. Each tap ducks for about half a second, so tap once per arm; a tap in mid-air ducks as soon as you land
+- **DOWN ARROW / S**: Duck under duck-sign arms. You stay down while the key is held, for at most about half a second, so press once per arm; a press held through a landing ducks as soon as you land
 - **P / ESC**: Pause
 - **Touch screens**: tap DUCK (bottom left) and JUMP (bottom right)
 
