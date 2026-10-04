@@ -218,22 +218,82 @@
             font-weight: bold;
             display: none;
         }
+        /* Intro countdown, synced to GetReady.mp3 */
         #countdown {
             position: absolute;
-            top: 45%;
+            top: 42%;
             left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: clamp(80px, 18vw, 180px);
-            color: white;
-            text-shadow: 0 0 30px rgba(80, 200, 255, 0.9);
+            width: 0;
+            height: 0;
             z-index: 300;
             display: none;
-            font-weight: bold;
+            pointer-events: none;
+        }
+        #countdown-text, #countdown-ring {
+            position: absolute;
+            left: 0;
+            top: 0;
+            transform: translate(-50%, -50%);
+            opacity: 0;
+        }
+        #countdown-text {
+            font-size: clamp(90px, 20vw, 200px);
+            font-weight: 900;
+            color: #eafcff;
+            white-space: nowrap;
+            text-shadow: 0 0 18px rgba(64, 224, 255, 0.95), 0 0 48px rgba(26, 166, 200, 0.8), 0 4px 0 #0e6f8a;
+        }
+        #countdown-ring {
+            width: clamp(150px, 30vw, 300px);
+            height: clamp(150px, 30vw, 300px);
+            border-radius: 50%;
+            border: 4px solid rgba(64, 224, 255, 0.9);
+            box-shadow: 0 0 24px rgba(64, 224, 255, 0.8), inset 0 0 24px rgba(64, 224, 255, 0.5);
+        }
+        #countdown.ready #countdown-text {
+            font-size: clamp(34px, 8vw, 80px);
+            letter-spacing: 0.25em;
+            padding-left: 0.25em; /* balances the trailing letter-spacing */
+        }
+        #countdown.ready #countdown-ring { display: none; }
+        #countdown.go #countdown-text {
+            color: #fff6c8;
+            text-shadow: 0 0 18px rgba(255, 216, 74, 1), 0 0 56px rgba(255, 160, 0, 0.9), 0 5px 0 #b86b00;
+        }
+        #countdown.go #countdown-ring { border-color: rgba(255, 216, 74, 0.95); box-shadow: 0 0 30px rgba(255, 180, 0, 0.9); }
+        #countdown.animate #countdown-text { animation: cd-pop var(--cd-dur, 1s) cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards; }
+        #countdown.animate #countdown-ring { animation: cd-ring var(--cd-dur, 1s) ease-out forwards; }
+        #countdown.go.animate #countdown-text { animation: cd-go var(--cd-dur, 1s) cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards; }
+        #countdown.go.animate #countdown-ring { animation: cd-burst var(--cd-dur, 1s) ease-out forwards; }
+        @keyframes cd-pop {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(1.9); filter: blur(8px); }
+            22% { opacity: 1; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
+            78% { opacity: 1; transform: translate(-50%, -50%) scale(0.97); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+        }
+        @keyframes cd-ring {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(1.8); }
+            25% { opacity: 1; }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(0.55); }
+        }
+        @keyframes cd-go {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.4) rotate(-8deg); }
+            18% { opacity: 1; transform: translate(-50%, -50%) scale(1.15) rotate(2deg); }
+            35% { transform: translate(-50%, -50%) scale(1) rotate(0); }
+            70% { opacity: 1; }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1.6); filter: blur(4px); }
+        }
+        @keyframes cd-burst {
+            0% { opacity: 1; transform: translate(-50%, -50%) scale(0.3); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(3.2); }
         }
     </style>
 </head>
 <body>
     <div id="game-container" tabindex="-1">
+        <audio id="get-ready" preload="auto">
+            <source src="GetReady.mp3" type="audio/mpeg">
+        </audio>
         <audio id="background-music" loop>
             <source src="Starlight Blue Background.mp3" type="audio/mpeg">
         </audio>
@@ -243,14 +303,14 @@
             <div id="level-display">SPEED 1.0×</div>
             <div id="best-display">BEST 0</div>
         </div>
-        <div id="instructions">Jump: SPACE / ↑ &nbsp;·&nbsp; Duck (hold): ↓ / S &nbsp;·&nbsp; Pause: P</div>
+        <div id="instructions">Jump: SPACE / ↑ &nbsp;·&nbsp; Duck (tap, once per arm): ↓ / S &nbsp;·&nbsp; Pause: P</div>
         <div id="footing">
             <div>FOOTING</div>
             <div id="footing-pips"></div>
         </div>
         <button id="duck-button" class="touch-button">DUCK</button>
         <button id="jump-button" class="touch-button">JUMP</button>
-        <div id="countdown">3</div>
+        <div id="countdown"><div id="countdown-ring"></div><div id="countdown-text"></div></div>
         <div id="start-screen">
             <h1 id="start-title">Duck Runner</h1>
             <p id="start-subtitle">Climb the twisted tower. Jump the low bars, duck the duck signs. Every hit knocks you back down the ramp. Eight hits and you're in the abyss.</p>
@@ -258,7 +318,7 @@
             <button id="start-button">Start Game</button>
             <div id="controls-info">
                 <p>Jump: SPACE / ↑ / W</p>
-                <p>Duck (hold): ↓ / S &nbsp;·&nbsp; duck in mid-air to drop fast</p>
+                <p>Duck: ↓ / S, tap once for each arm (a tap in mid-air ducks on landing)</p>
                 <p>Pause: P / ESC</p>
             </div>
         </div>
@@ -296,10 +356,12 @@
             const PHI_HOME = 0;              // where the player stands with no hits taken
             const PLAYER_WIDTH = 0.55, PLAYER_HEIGHT = 1.0, PLAYER_DEPTH = 0.5;
             const CROUCH_SCALE = 0.5;
-            const JUMP_VELOCITY = 9.7, GRAVITY = 31, FAST_FALL_VELOCITY = 14;
+            const JUMP_VELOCITY = 9.7, GRAVITY = 31;
+            const JUMP_TIME = 2 * JUMP_VELOCITY / GRAVITY; // a jump is committed until landing (0.626 s)
+            const DUCK_TIME = 0.55;          // each duck press crouches this long, then stands even if held
             const JUMP_BUFFER = 0.12;
             const KNOCK_ANGLE = 0.11;        // helix angle lost per hit
-            const MAX_HITS = 8;
+            const MAX_HITS = 7;
             const INVINCIBLE_TIME = 0.6;
 
             // ---- Obstacles ----
@@ -318,14 +380,11 @@
             // Speed rises continuously toward OMEGA_MAX; the gap between obstacles shrinks toward GAP_END.
             const OMEGA_START = 0.55;        // rad/s the ramp turns at the start
             const OMEGA_MAX = 4.4;           // asymptote: speed keeps rising but never passes this
-            const OMEGA_SCALE = 127;         // obstacles per e-fold of the remaining speed-up
+            const OMEGA_SCALE = 90;          // obstacles per e-fold of the remaining speed-up
             const GAP_START = 1.7, GAP_END = 0.26, GAP_SCALE = 45; // seconds between obstacles
             const GAP_JITTER = 0.45;         // gaps are stretched by up to 45%, never shortened
-            // Feasibility floor: consecutive obstacles are never closer in time than
-            // overlap time + GAP_FLOOR_SLACK. The worst pair (LOW then LOW, with a fast-fall in
-            // between and inputs only every 1/30 s) needs 0.193 s after the overlap; 0.2267 s keeps margin.
-            // Do not tune this by bisection: LOW-LOW feasibility is not monotonic in the gap at low speed.
-            const GAP_FLOOR_SLACK = 0.160 + 2 / 30;
+            // Feasibility floor (see gapFloor): margin for inputs that only land every 1/30 s.
+            const INPUT_MARGIN = 2 / 30;
             const MAX_SAME_TYPE = 3;
             const IDLE_OMEGA = 0.25;
 
@@ -351,10 +410,11 @@
             let spawnIndex = 0;            // obstacles created this run, offset by baseN
             let sameTypeRun = 0, lastType = -1;
             let pendingSpacing = null;     // angle to the next spawn, rolled once per spawn
+            let pendingType = null;        // type of the next spawn, rolled with its spacing
             let simAccumulator = 0;
             let prevSpin = 0;              // state at the start of the last step, for render interpolation
             const player = {
-                y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0, prevY: 0, prevSlip: 0,
+                y: 0, vy: 0, grounded: true, duckTimer: 0, duckQueued: false, crouch: 1, slip: 0, prevY: 0, prevSlip: 0,
                 jumpBuffer: 0, invincible: 0, walk: 0, tumble: 0,
                 fall: null
             };
@@ -362,7 +422,25 @@
             let countdownTimers = [];
             let timeScale = 1;
             const debugOverrides = { startN: 0, omega: null, exactFloor: false, pattern: null };
-            let backgroundMusic, isMuted = false;
+            let backgroundMusic, getReadyCue, isMuted = false;
+            const MUSIC_VOLUME = 0.5;
+
+            // ---- Intro cue (GetReady.mp3) ----
+            // Word onsets measured from the file's speech-band envelope. The ramp starts turning and
+            // inputs go live at GO. The countdown follows the cue's own playback clock, so the text
+            // stays in sync even if the audio starts late; with sound muted or blocked it runs on a timer.
+            const INTRO_STEPS = [
+                { t: 0.25, text: 'GET READY', cls: 'ready' },
+                { t: 1.85, text: '3' },
+                { t: 2.92, text: '2' },
+                { t: 4.08, text: '1' },
+                { t: 5.10, text: 'GO!', cls: 'go' }
+            ];
+            const INTRO_GO = INTRO_STEPS[INTRO_STEPS.length - 1].t;
+            const CUE_FADE_DELAY = 0.9, CUE_FADE_TIME = 1.3; // after GO, the cue's tail fades out...
+            const MUSIC_FADE_TIME = 1.5;                      // ...while the background music fades in
+            let intro = null;      // countdown in progress: { mode: 'wait' | 'audio' | 'timer', base, step }
+            let crossfade = null;  // after GO: { start } (performance.now() ms)
             let jumpSound, duckSound, collisionSound;
 
             const soundManager = {
@@ -702,7 +780,7 @@
 
             function setDuck(held) {
                 if (held && !input.duckHeld && state === 'playing') {
-                    input.duckPressed = true; // a press in mid-air triggers a fast-fall
+                    input.duckPressed = true; // each press starts one timed duck
                     soundManager.playDuck();
                 }
                 input.duckHeld = held;
@@ -747,7 +825,8 @@
                 document.getElementById('mute-button').addEventListener('click', toggleMute);
 
                 backgroundMusic = document.getElementById('background-music');
-                backgroundMusic.volume = 0.5;
+                backgroundMusic.volume = MUSIC_VOLUME;
+                getReadyCue = document.getElementById('get-ready');
 
                 window.addEventListener('resize', () => {
                     fitCamera();
@@ -761,8 +840,14 @@
             function toggleMute() {
                 isMuted = !isMuted;
                 document.getElementById('mute-button').textContent = isMuted ? '🔇' : '🔊';
-                if (isMuted) backgroundMusic.pause();
-                else if (state !== 'menu' && state !== 'over' && state !== 'paused') playMusic();
+                if (isMuted) {
+                    backgroundMusic.pause();
+                    // keep the countdown running on a timer from where the cue was
+                    if (intro && intro.mode === 'audio') runIntroOnTimer(getReadyCue.currentTime);
+                    getReadyCue.pause();
+                } else if (state === 'playing' || state === 'falling') {
+                    playMusic();
+                }
                 soundManager.setMute(isMuted);
             }
 
@@ -774,6 +859,7 @@
             function resetGame() {
                 for (const t of countdownTimers) clearTimeout(t);
                 countdownTimers = [];
+                stopIntro();
                 clearObstacles();
                 score = 0;
                 hits = 0;
@@ -783,7 +869,7 @@
                 omega = 0;
                 simAccumulator = 0;
                 Object.assign(player, {
-                    y: 0, vy: 0, grounded: true, fastFall: false, crouch: 1, slip: 0, prevY: 0, prevSlip: 0,
+                    y: 0, vy: 0, grounded: true, duckTimer: 0, duckQueued: false, crouch: 1, slip: 0, prevY: 0, prevSlip: 0,
                     jumpBuffer: 0, invincible: 0, walk: 0, tumble: 0, fall: null
                 });
                 prevSpin = spin;
@@ -795,6 +881,7 @@
                 sameTypeRun = 0;
                 lastType = -1;
                 pendingSpacing = null;
+                pendingType = null;
                 // Pre-fill the incoming stretch of ramp so the first obstacle arrives in a few seconds.
                 // Uses the same spacing rule as live spawning, so the feasibility floor covers it too.
                 createObstacle(nextObstacleType(), FIRST_OBSTACLE_PHI);
@@ -808,23 +895,105 @@
                 document.getElementById('game-over').style.display = 'none';
                 document.getElementById('pause-screen').style.display = 'none';
                 resetGame();
-                playMusic();
+                backgroundMusic.pause();
                 document.getElementById('game-container').focus();
-                startCountdown(() => { state = 'playing'; });
+                startIntro();
             }
 
-            function startCountdown(callback) {
+            // ---------- Intro countdown ----------
+            function startIntro() {
                 state = 'countdown';
+                intro = { mode: 'wait', base: 0, step: -1 };
+                getReadyCue.currentTime = 0;
+                getReadyCue.volume = 1;
+                if (isMuted) { runIntroOnTimer(0); return; }
+                const session = intro;
+                getReadyCue.play()
+                    .then(() => { if (intro === session && intro.mode === 'wait') intro.mode = 'audio'; })
+                    .catch(() => { if (intro === session && intro.mode === 'wait') runIntroOnTimer(0); });
+                // If the cue hasn't started within 1.5 s (slow load), don't leave the player waiting.
+                countdownTimers.push(setTimeout(() => {
+                    if (intro === session && intro.mode === 'wait') { getReadyCue.pause(); runIntroOnTimer(0); }
+                }, 1500));
+            }
+
+            function runIntroOnTimer(fromTime) {
+                if (!intro) return;
+                intro.mode = 'timer';
+                intro.base = performance.now() - fromTime * 1000;
+            }
+
+            function introTime() {
+                if (intro.mode === 'audio') {
+                    if (!getReadyCue.paused && !getReadyCue.ended) return getReadyCue.currentTime;
+                    runIntroOnTimer(getReadyCue.currentTime); // audio stopped early: continue on a timer
+                }
+                if (intro.mode === 'timer') return (performance.now() - intro.base) / 1000;
+                return 0;
+            }
+
+            function updateIntro() {
+                if (intro && state === 'countdown') {
+                    const t = introTime();
+                    let step = intro.step;
+                    while (step + 1 < INTRO_STEPS.length && INTRO_STEPS[step + 1].t <= t) step++;
+                    if (step !== intro.step) {
+                        intro.step = step;
+                        showIntroStep(step);
+                        if (step === INTRO_STEPS.length - 1) beginPlay();
+                    }
+                }
+                if (crossfade) updateCrossfade();
+            }
+
+            function showIntroStep(i) {
                 const el = document.getElementById('countdown');
-                const steps = ['3', '2', '1', 'GO!'];
-                steps.forEach((text, i) => {
-                    countdownTimers.push(setTimeout(() => {
-                        el.style.display = 'block';
-                        el.textContent = text;
-                        if (text === 'GO!') callback();
-                    }, i * 700));
-                });
-                countdownTimers.push(setTimeout(() => { el.style.display = 'none'; }, steps.length * 700));
+                const s = INTRO_STEPS[i];
+                const next = INTRO_STEPS[i + 1];
+                el.className = s.cls || '';
+                el.style.setProperty('--cd-dur', (next ? Math.min(next.t - s.t, 1.4) : 1.1) + 's');
+                document.getElementById('countdown-text').textContent = s.text;
+                el.style.display = 'block';
+                void el.offsetWidth; // restart the CSS animation
+                el.classList.add('animate');
+            }
+
+            // GO: the ramp starts turning (omega ramps up from 0), inputs go live, and the cue's
+            // tail crossfades into the background music, which starts from the top each game.
+            function beginPlay() {
+                state = 'playing';
+                intro = null;
+                clock.getDelta();
+                crossfade = { start: performance.now() };
+                if (!isMuted) {
+                    backgroundMusic.currentTime = 0;
+                    backgroundMusic.volume = 0;
+                    playMusic();
+                }
+                countdownTimers.push(setTimeout(() => {
+                    document.getElementById('countdown').style.display = 'none';
+                }, 1200));
+            }
+
+            function updateCrossfade() {
+                const since = (performance.now() - crossfade.start) / 1000;
+                const clamp01 = (x) => Math.max(0, Math.min(1, x));
+                getReadyCue.volume = 1 - clamp01((since - CUE_FADE_DELAY) / CUE_FADE_TIME);
+                backgroundMusic.volume = MUSIC_VOLUME * clamp01(since / MUSIC_FADE_TIME);
+                if (since >= Math.max(CUE_FADE_DELAY + CUE_FADE_TIME, MUSIC_FADE_TIME)) finishCrossfade();
+            }
+
+            function finishCrossfade() {
+                crossfade = null;
+                getReadyCue.pause();
+                backgroundMusic.volume = MUSIC_VOLUME;
+            }
+
+            function stopIntro() {
+                intro = null;
+                if (crossfade) finishCrossfade();
+                if (getReadyCue) getReadyCue.pause();
+                document.getElementById('countdown').style.display = 'none';
             }
 
             function togglePause() {
@@ -832,6 +1001,7 @@
                     pausedFrom = state;
                     state = 'paused';
                     document.getElementById('pause-screen').style.display = 'flex';
+                    if (crossfade) finishCrossfade();
                     backgroundMusic.pause();
                 } else if (state === 'paused') {
                     state = pausedFrom;
@@ -854,6 +1024,7 @@
                 document.getElementById('final-score').textContent = `Obstacles cleared: ${score}`;
                 document.getElementById('new-best').style.display = isNewBest ? 'block' : 'none';
                 document.getElementById('game-over').style.display = 'block';
+                if (crossfade) finishCrossfade();
                 backgroundMusic.pause();
                 updateHud();
             }
@@ -885,18 +1056,35 @@
                 return GAP_END + (GAP_START - GAP_END) * Math.exp(-n / GAP_SCALE);
             }
 
-            // Shortest time allowed between two obstacles at speed w: the overlap time plus slack.
-            function gapFloor(w) {
-                return 2 * OVERLAP_ANGLE / w + GAP_FLOOR_SLACK;
+            // Time after takeoff when the feet first clear a LOW bar at its worst (entry) height.
+            const LOW_RISE_TIME = (() => {
+                const clearance = LOW_TOP - HIT_FORGIVENESS + PITCH / TAU * OVERLAP_ANGLE;
+                const v = JUMP_VELOCITY;
+                return (v - Math.sqrt(v * v - 2 * GRAVITY * clearance)) / GRAVITY;
+            })();
+
+            // Shortest center-to-center time allowed from an obstacle of type prev to one of type next
+            // at speed w. Each case leaves the player grounded and standing for the next pair, so any
+            // sequence built from these gaps is clearable with inputs every 1/30 s:
+            //  - after a LOW: the committed jump lands JUMP_TIME later, and the next jump must then rise
+            //    above the bar (crouching for a HIGH is quicker than that);
+            //  - HIGH then LOW: the jump can start as the arm leaves (a jump cancels the duck);
+            //  - HIGH then HIGH: far enough apart that one duck press cannot cover both arms.
+            function gapFloor(prev, next, w) {
+                const overlap = 2 * OVERLAP_ANGLE / w;
+                if (prev === null) return 0;
+                if (prev === LOW) return JUMP_TIME + LOW_RISE_TIME + INPUT_MARGIN;
+                if (next === LOW) return overlap + LOW_RISE_TIME + SIM_STEP + INPUT_MARGIN;
+                return Math.max(DUCK_TIME + 0.05 - overlap, overlap + INPUT_MARGIN);
             }
 
             // Angle between obstacle i and the one before it. Obstacle i reaches the player while
             // n <= i, and omega only rises toward omegaTarget(n) from below, so the ramp never turns
             // faster than omegaTarget(i) during its approach: the real time gap is at least `gap`.
-            function nextSpacing(i) {
+            function nextSpacing(i, prevType, type) {
                 const w = omegaTarget(i);
                 const designed = debugOverrides.exactFloor ? 0 : designGap(i) * (1 + Math.random() * GAP_JITTER);
-                const gap = Math.max(designed, gapFloor(w));
+                const gap = Math.max(designed, gapFloor(prevType, type, w));
                 return w * gap;
             }
 
@@ -965,19 +1153,24 @@
             // Places the next obstacle exactly one spacing behind the newest once that slot has
             // rotated into view of SPAWN_PHI. Returns true if it spawned one.
             function spawnObstacles() {
-                if (pendingSpacing === null) pendingSpacing = nextSpacing(spawnIndex);
                 const newest = obstacles[obstacles.length - 1];
+                if (pendingSpacing === null) {
+                    pendingType = nextObstacleType();
+                    pendingSpacing = nextSpacing(spawnIndex, newest ? newest.userData.type : null, pendingType);
+                }
                 const phi = newest ? newest.userData.phi + pendingSpacing : SPAWN_PHI;
                 if (phi > SPAWN_PHI) return false;
-                createObstacle(nextObstacleType(), phi);
+                createObstacle(pendingType, phi);
                 pendingSpacing = null;
+                pendingType = null;
                 return true;
             }
 
             function updatePlayer(dt) {
                 if (input.duckPressed) {
-                    // Fast-fall only on a fresh duck press in mid-air, so a held duck never eats a jump.
-                    if (!player.grounded) player.fastFall = true;
+                    // A press ducks for DUCK_TIME; in mid-air the jump is committed, so it waits for landing.
+                    if (player.grounded) player.duckTimer = DUCK_TIME;
+                    else player.duckQueued = true;
                     input.duckPressed = false;
                 }
                 if (input.jumpQueued) {
@@ -987,7 +1180,8 @@
                 if (player.grounded && player.jumpBuffer > 0) {
                     player.vy = JUMP_VELOCITY;
                     player.grounded = false;
-                    player.fastFall = false;
+                    player.duckTimer = 0; // jumping cancels a duck
+                    player.duckQueued = false;
                     player.jumpBuffer = 0;
                     soundManager.playJump();
                 }
@@ -995,17 +1189,18 @@
 
                 if (!player.grounded) {
                     // Exact constant-gravity integration, so the arc is the same at any step size.
-                    if (player.fastFall) player.vy = Math.min(player.vy, -FAST_FALL_VELOCITY);
                     player.y += player.vy * dt - GRAVITY * dt * dt / 2;
                     player.vy -= GRAVITY * dt;
                     if (player.y <= 0) {
                         player.y = 0;
                         player.vy = 0;
                         player.grounded = true;
-                        player.fastFall = false;
+                        if (player.duckQueued) player.duckTimer = DUCK_TIME;
+                        player.duckQueued = false;
                     }
                 }
-                const crouchTarget = player.grounded && input.duckHeld ? CROUCH_SCALE : 1;
+                const crouchTarget = player.grounded && player.duckTimer > 0 ? CROUCH_SCALE : 1;
+                player.duckTimer = Math.max(0, player.duckTimer - dt);
                 player.crouch += (crouchTarget - player.crouch) * Math.min(1, dt * 30);
                 player.slip += (hits - player.slip) * Math.min(1, dt * 10);
                 player.invincible = Math.max(0, player.invincible - dt);
@@ -1128,6 +1323,7 @@
 
             function animate() {
                 requestAnimationFrame(animate);
+                updateIntro();
                 advance(Math.min(clock.getDelta() * timeScale, MAX_FRAME_DT));
                 render();
             }
@@ -1160,10 +1356,10 @@
             // ---------- Debug hook (?debug) for automated testing ----------
             function exposeDebug() {
                 const snapshot = () => ({
-                    state, score, hits, skipped, n: reachedCount(), spawnIndex, omega,
+                    state, introMode: intro ? intro.mode : null, score, hits, skipped, n: reachedCount(), spawnIndex, omega,
                     omegaTarget: omegaTarget(reachedCount()),
                     phiP: playerPhi(), y: player.y, vy: player.vy, grounded: player.grounded,
-                    fastFall: player.fastFall, crouch: player.crouch, invincible: player.invincible,
+                    duckTimer: player.duckTimer, duckQueued: player.duckQueued, crouch: player.crouch, invincible: player.invincible,
                     jumpBuffer: player.jumpBuffer, duckHeld: input.duckHeld,
                     obstacles: obstacles.map(o => ({ id: o.userData.id, type: o.userData.type, phi: o.userData.phi, hit: o.userData.hit, passed: o.userData.passed, skipped: o.userData.skipped }))
                 });
@@ -1202,7 +1398,7 @@
                     frame: (dt) => { advance(Math.min(dt, MAX_FRAME_DT)); render(); return spinGroup.rotation.y; },
                     curves: { omegaTarget, designGap, gapFloor },
                     constants: {
-                        OVERLAP_ANGLE, LOW, HIGH, JUMP_VELOCITY, GRAVITY, FAST_FALL_VELOCITY, R_PLAYER, R_IN, MAX_HITS,
+                        OVERLAP_ANGLE, LOW, HIGH, JUMP_VELOCITY, GRAVITY, JUMP_TIME, DUCK_TIME, LOW_RISE_TIME, R_PLAYER, R_IN, MAX_HITS,
                         LOW_TOP, HIGH_BOTTOM, HIT_FORGIVENESS, PITCH, TAU, SIM_STEP, JUMP_BUFFER,
                         OMEGA_START, OMEGA_MAX, GAP_END, CAM_BACK, CAM_RADIUS
                     }

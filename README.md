@@ -6,16 +6,18 @@ You walk up a spiral ramp wrapped around a spinning tower. Obstacles sweep aroun
 ## How to Play
 
 - **SPACE / UP ARROW / W**: Jump over low bars
-- **DOWN ARROW / S (hold)**: Duck under duck-sign arms; ducking in mid-air drops you fast
+- **DOWN ARROW / S (tap)**: Duck under duck-sign arms. Each tap ducks for about half a second, so tap once per arm; a tap in mid-air ducks as soon as you land
 - **P / ESC**: Pause
-- **Touch screens**: hold the DUCK button (bottom left), tap JUMP (bottom right)
+- **Touch screens**: tap DUCK (bottom left) and JUMP (bottom right)
 
 ## Features
 
 - Spiral ramp that turns around the tower, with obstacles coming into view as they round the curve
-- 8-hit footing meter; each hit costs you ground on the ramp
+- Voiced "Get ready... 3, 2, 1, GO!" intro with synced countdown text; the tower starts turning and controls go live on GO, then the cue crossfades into the music
+- 7-hit footing meter; each hit costs you ground on the ramp
+- Jumps are committed: once you leave the ground you ride the arc until you land
 - Continuous speed-up: the tower turns faster and obstacles come closer together with every obstacle you reach. 100 is a good score; 200 is close to the human limit
-- Never impossible: obstacle spacing has a hard floor derived from the jump physics, so every sequence stays clearable with perfect inputs, even at top speed
+- Never impossible: obstacle spacing has a hard floor derived from the jump physics, and on which obstacle types come in a row, so every sequence stays clearable with perfect inputs, even at top speed
 - Best score saved in your browser
 - Mobile-friendly with on-screen buttons
 
